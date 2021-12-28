@@ -12,6 +12,44 @@ Main script
 #%% Import packages
 
 #%% Custom functions
+def objectiveRF(trial: Trial, X, y, X_val, y_val):
+    params = {
+        'n_estimators': trial.suggest_categorical('n_estimators', [200]),
+        'criterion':trial.suggest_categorical('criterion', ['entropy']),
+        'max_depth': trial.suggest_int('max_depth', 3, 20),
+        'max_features': trial.suggest_categorical(
+            'max_features', [None, 'sqrt', 'log2']),
+        'n_jobs': trial.suggest_categorical('n_jobs', [cpu_use]),
+        'random_state': trial.suggest_categorical('random_state', [42]),
+        }
+    
+    model = RandomForestClassifier(**params)
+    rf_model = model.fit(X, y)
+    
+    score = f1_score(y_val, rf_model.predict(X_val), average='macro')
+    
+    return score
+
+
+def get_rf_optuna(X_tr, y_tr, X_val, y_val, n_trial):
+    study = optuna.create_study(
+        study_name='rf_param_opt',
+        direction='maximize', 
+        sampler=TPESampler(seed=42)
+        )
+    
+    study.optimize(lambda trial: objectiveRF(
+        trial, X_tr, y_tr, X_val, y_val),
+        n_trials=n_trial)
+    
+    best_rf = RandomForestClassifier(**study.best_params).fit(
+        pd.concat([X_tr, X_val], axis=0),
+        pd.concat([y_tr, y_val], axis=0),
+        )
+    
+    return best_rf, study.best_value, study
+
+
 def fix_random_seed(seed=42):
     import random
     import numpy as np
@@ -177,7 +215,7 @@ if __name__ == '__main__':
                 pass
     '''
     
-    #%% Train validation split (by strati)
+    #%% Train validation split (by stratify)
     X_tr = {}
     y_tr = {}
     X_val = {}
@@ -194,64 +232,8 @@ if __name__ == '__main__':
     #%% Train naive bayes models
     mdl_nb = {y:GaussianNB().fit(X_tr[y], y_tr[y]) for y in years}
     
-    #%% Train randomforest models
-    '''
-    rf_params = {'random_state':42,
-                 'n_jobs':-1}
-    
-    mdl_rf = {y:RandomForestClassifier(**rf_params).fit(X_tr[y], y_tr[y])
-              for y in years}
-    
-    #%% Select model
-    mdl = mdl_rf    
-    
-    #%% Check validation score
-    y_pred_val = {y:mdl[y].predict(X_val[y]) for y in years}
-            
-    dict_val_f1 = {y:f1_score(y_val[y], y_pred_val[y], average='macro')
-              for y in years}
-    
-    #%%
-    val_f1_hmean = hmean([v for k, v in dict_val_f1.items()])
-    '''
+
     #%% (Test) optuna
-    def objectiveRF(trial: Trial, X, y, X_val, y_val):
-        params = {
-            'n_estimators': trial.suggest_categorical('n_estimators', [200]),
-            'criterion':trial.suggest_categorical('criterion', ['entropy']),
-            'max_depth': trial.suggest_int('max_depth', 3, 20),
-            'max_features': trial.suggest_categorical(
-                'max_features', [None, 'sqrt', 'log2']),
-            'n_jobs': trial.suggest_categorical('n_jobs', [cpu_use]),
-            'random_state': trial.suggest_categorical('random_state', [42]),
-            }
-        
-        model = RandomForestClassifier(**params)
-        rf_model = model.fit(X, y)
-        
-        score = f1_score(y_val, rf_model.predict(X_val), average='macro')
-        
-        return score
-    
-    
-    def get_rf_optuna(X_tr, y_tr, X_val, y_val, n_trial):
-        study = optuna.create_study(
-            study_name='rf_param_opt',
-            direction='maximize', 
-            sampler=TPESampler(seed=42)
-            )
-        
-        study.optimize(lambda trial: objectiveRF(
-            trial, X_tr, y_tr, X_val, y_val),
-            n_trials=n_trial)
-        
-        best_rf = RandomForestClassifier(**study.best_params).fit(
-            pd.concat([X_tr, X_val], axis=0),
-            pd.concat([y_tr, y_val], axis=0),
-            )
-        
-        return best_rf, study.best_value, study
-        
     rslt_param_opt = \
         {y: get_rf_optuna(X_tr[y], y_tr[y], X_val[y], y_val[y], 15)
          for y in years}
