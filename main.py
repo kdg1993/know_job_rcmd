@@ -36,6 +36,8 @@ if __name__ == '__main__':
     import os
     import pickle
     import itertools as it
+    import optuna
+    import joblib
     
     from matplotlib import pyplot as plt
     from copy import deepcopy
@@ -46,11 +48,18 @@ if __name__ == '__main__':
     from sklearn.preprocessing import LabelEncoder
     from sklearn.metrics import f1_score
     from sklearn.model_selection import train_test_split
+    from sklearn.ensemble import RandomForestClassifier
+    from scipy.stats import hmean
+    from optuna import Trial, visualization
+    from optuna.samplers import TPESampler    
+    from multiprocessing import cpu_count
     
     #%% Overall settings
-    run_new_nb_submission = False
-    print('\nMake new submission file based on naive bayes <{}>'.format(
-        run_new_nb_submission))
+    run_new_submission = False
+    print('\nMake new submission file <{}>'.format(
+        run_new_submission))
+    
+    cpu_use = int(2*cpu_count()/4)
 
     #%% Load data
     years = [2017, 2018, 2019, 2020]
@@ -144,8 +153,14 @@ if __name__ == '__main__':
                         lambda x: -3 if len(x)>=2 else x)
                     
     #%% (Test) Remove every feature with string value
+    '''
+    dict_tr = {k:v.drop(columns=dict_encoder[k].keys()) 
+               for k, v in dict_tr.items()}
     
-                    
+    dict_test = {k:v.drop(columns=dict_encoder[k].keys()) 
+                 for k, v in dict_test.items()}
+    '''
+          
     #%% Add values to the dataset to make it positive
     # It is necessary for Multinomial Naive Bayes model
     '''
@@ -176,21 +191,123 @@ if __name__ == '__main__':
         X_val[y] = val.drop(columns='knowcode')
         y_val[y] = val.knowcode
     
-    #%% Train naive bayes model
+    #%% Train naive bayes models
     mdl_nb = {y:GaussianNB().fit(X_tr[y], y_tr[y]) for y in years}
-        
-    #%% Check validation score
-    y_pred_val = {y:mdl_nb[y].predict(X_val[y]) for y in years}
-            
-    val_f1 = {y:f1_score(y_val[y], y_pred_val[y], average='macro')
+    
+    #%% Train randomforest models
+    '''
+    rf_params = {'random_state':42,
+                 'n_jobs':-1}
+    
+    mdl_rf = {y:RandomForestClassifier(**rf_params).fit(X_tr[y], y_tr[y])
               for y in years}
     
+    #%% Select model
+    mdl = mdl_rf    
     
-        
-        
-        
-        
+    #%% Check validation score
+    y_pred_val = {y:mdl[y].predict(X_val[y]) for y in years}
+            
+    dict_val_f1 = {y:f1_score(y_val[y], y_pred_val[y], average='macro')
+              for y in years}
     
+    #%%
+    val_f1_hmean = hmean([v for k, v in dict_val_f1.items()])
+    '''
+    #%% (Test) optuna
+    def objectiveRF(trial: Trial, X, y, X_val, y_val):
+        params = {
+            'n_estimators': trial.suggest_categorical('n_estimators', [200]),
+            'criterion':trial.suggest_categorical('criterion', ['entropy']),
+            'max_depth': trial.suggest_int('max_depth', 3, 20),
+            'max_features': trial.suggest_categorical(
+                'max_features', [None, 'sqrt', 'log2']),
+            'n_jobs': trial.suggest_categorical('n_jobs', [cpu_use]),
+            'random_state': trial.suggest_categorical('random_state', [42]),
+            }
+        
+        model = RandomForestClassifier(**params)
+        rf_model = model.fit(X, y)
+        
+        score = f1_score(y_val, rf_model.predict(X_val), average='macro')
+        
+        return score
+    
+    
+    def get_rf_optuna(X_tr, y_tr, X_val, y_val, n_trial):
+        study = optuna.create_study(
+            study_name='rf_param_opt',
+            direction='maximize', 
+            sampler=TPESampler(seed=42)
+            )
+        
+        study.optimize(lambda trial: objectiveRF(
+            trial, X_tr, y_tr, X_val, y_val),
+            n_trials=n_trial)
+        
+        best_rf = RandomForestClassifier(**study.best_params).fit(
+            pd.concat([X_tr, X_val], axis=0),
+            pd.concat([y_tr, y_val], axis=0),
+            )
+        
+        return best_rf, study.best_value, study
+        
+    rslt_param_opt = \
+        {y: get_rf_optuna(X_tr[y], y_tr[y], X_val[y], y_val[y], 15)
+         for y in years}
+    
+    #%% Divide parameter optimization results
+    mdl_best = {k:v[0] for k, v in rslt_param_opt.items()}
+    dict_val_f1 = {k:v[1] for k, v in rslt_param_opt.items()}
+    rslt_opt = {k:v[2] for k, v in rslt_param_opt.items()}
+    
+    for k, v in dict_val_f1.items():
+        print('Val score of {}: {}'.format(k, round(v, 3)))
+    
+    print('Val harmonic mean score : {}'.format(round(
+        hmean([v for k, v in dict_val_f1.items()]), 3)))
+    
+    #%% Predict test set
+    y_pred = [pd.Series(index=dict_test[y].index,
+                        data=mdl_best[y].predict(dict_test[y]),
+                        name='knowcode')
+              for y in years]
+    y_pred = pd.concat(y_pred, axis=0)
+    
+    df_subm = y_pred.reset_index()
+        
+    #%% Make and Save submission
+    if run_new_submission:
+        if not os.path.exists('submission_save'):
+            os.makedirs('submission_save')
+            
+        dir_org = os.getcwd()            
+        os.chdir('submission_save')
+        cur_t = '{}_{}_{}_{}_{}'.format(datetime.now().year, 
+                                        datetime.now().month,
+                                        datetime.now().day, 
+                                        datetime.now().hour,
+                                        datetime.now().minute)
+        os.mkdir('submission_'+cur_t)
+        os.chdir('submission_'+cur_t)
+               
+        df_subm.to_csv('submission_time_'+cur_t+'.csv',
+                       index=False)
+        
+        try:
+            with open ('best_mdl', 'wb') as f:
+                pickle.dump(mdl_best, f)
+        except MemoryError:
+            os.remove('best_mdl')
+            print('Pickle Memory error >> Save model by joblib instead')
+            joblib.dump(mdl_best, 'best_mdl.pkl')
+            
+        with open ('param_opt_rslt', 'wb') as f:
+            pickle.dump(rslt_opt, f)
+        
+        os.chdir(dir_org)
+        
+        
     
     
     
