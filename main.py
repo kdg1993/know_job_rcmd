@@ -10,15 +10,17 @@ Main script
 """
 
 #%% Import packages
+from optuna import Trial
 
 #%% Custom functions
 def objectiveRF(trial: Trial, X, y, X_val, y_val):
     params = {
         'n_estimators': trial.suggest_categorical('n_estimators', [200]),
         'criterion':trial.suggest_categorical('criterion', ['entropy']),
-        'max_depth': trial.suggest_int('max_depth', 3, 20),
-        'max_features': trial.suggest_categorical(
-            'max_features', [None, 'sqrt', 'log2']),
+        'max_depth': trial.suggest_int('max_depth', 3, 30),
+        # 'max_features': trial.suggest_categorical(
+        #     'max_features', [None, 'sqrt', 'log2']),
+        'max_features': trial.suggest_float('max_features', 0.1, 1),
         'n_jobs': trial.suggest_categorical('n_jobs', [cpu_use]),
         'random_state': trial.suggest_categorical('random_state', [42]),
         }
@@ -88,7 +90,7 @@ if __name__ == '__main__':
     from sklearn.model_selection import train_test_split
     from sklearn.ensemble import RandomForestClassifier
     from scipy.stats import hmean
-    from optuna import Trial, visualization
+    from optuna import visualization
     from optuna.samplers import TPESampler    
     from multiprocessing import cpu_count
     
@@ -97,7 +99,7 @@ if __name__ == '__main__':
     print('\nMake new submission file <{}>'.format(
         run_new_submission))
     
-    cpu_use = int(2*cpu_count()/4)
+    cpu_use = 5#int(3*cpu_count()/4)
 
     #%% Load data
     years = [2017, 2018, 2019, 2020]
@@ -145,8 +147,72 @@ if __name__ == '__main__':
     dict_test = {k:v.set_index('idx') for k, v in dict_test.items()}    
     
     # Fill empty elements
-    dict_tr = {k:v.replace(' ', -1) for k, v in dict_tr.items()}
-    dict_test = {k:v.replace(' ', -1) for k, v in dict_test.items()}
+    dict_tr = {k:v.replace(' ', '-1') for k, v in dict_tr.items()}
+    dict_test = {k:v.replace(' ', '-1') for k, v in dict_test.items()}
+    
+    # Change elements
+    list_chg = (
+        ['없음', '없다'], # Integrate '없다' and '없음'
+        )
+    for pre, post in list_chg:
+        dict_tr = {k:v.replace(pre, post) for k, v in dict_tr.items()}
+        dict_test = {k:v.replace(pre, post) for k, v in dict_test.items()}
+
+    #%% Remove space
+    for k, v in dict_tr.items():
+        for col in v.columns:
+            try: 
+                v[col].map(float)
+            except:
+                if not sum(v[col].str.contains(' ')):
+                    pass
+                else:
+                    v[col] = v[col].str.replace(' ', '')
+        dict_tr[k] = v
+        
+    for k, v in dict_test.items():
+        for col in v.columns:
+            try: 
+                v[col].map(float)
+            except:
+                if not sum(v[col].str.contains(' ')):
+                    pass
+                else:
+                    v[col] = v[col].str.replace(' ', '')
+        dict_test[k] = v
+    
+    #%% (Test) Word integration by similarity
+    '''
+    from difflib import SequenceMatcher
+    from time import sleep
+    
+    t1_raw = []
+    t1 = dict_tr[2017]['bq4_1a'].map(str)
+    
+    chg_log = []
+    
+    def word_changer(s):
+        s_new = deepcopy(s)
+        for i in tqdm(s.index):
+            w_i = s.at[i]
+            for w_j in s_new.loc[:i]:
+                sim = SequenceMatcher(None, w_i, w_j).quick_ratio()
+                if sim == 1:
+                    break
+                elif (sim >= 0.9) and (sim < 1):
+                    print(w_i, ' >> ', w_j, sim)
+                    chg_log.append((w_i, ' >> ', w_j))
+                    s_new.at[i] = w_j
+                    # sleep(1)
+        return s_new
+    
+    t1_new = word_changer(t1)
+    chg_log = list(set(chg_log))
+    
+    test = pd.DataFrame()
+    test['org'] = t1
+    test['new'] = t1_new
+    '''
     
     #%% Make label encoder for each years of datasets
     # Train set label encoding
@@ -232,10 +298,9 @@ if __name__ == '__main__':
     #%% Train naive bayes models
     mdl_nb = {y:GaussianNB().fit(X_tr[y], y_tr[y]) for y in years}
     
-
-    #%% (Test) optuna
+    #%% RandomForest hyperparameter search by optuna
     rslt_param_opt = \
-        {y: get_rf_optuna(X_tr[y], y_tr[y], X_val[y], y_val[y], 15)
+        {y: get_rf_optuna(X_tr[y], y_tr[y], X_val[y], y_val[y], 30)
          for y in years}
     
     #%% Divide parameter optimization results
