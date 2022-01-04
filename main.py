@@ -13,6 +13,82 @@ Main script
 from optuna import Trial
 
 #%% Custom functions
+def objectiveSVC(trial: Trial, X, y, X_val, y_val):
+    params = {
+        'kernel': trial.suggest_categorical('kernel', ['rbf', 'sigmoid']),
+        'C': trial.suggest_loguniform('C', 1e-3, 1e+3),
+        'gamma': trial.suggest_categorical('gamma', ['scale', 'auto'])
+        }
+    
+    model = SVC(**params)
+    svc_model = model.fit(X, y)
+    
+    score = f1_score(y_val, svc_model.predict(X_val), average='macro')
+
+    return score
+
+
+def get_svc_optuna(X_tr, y_tr, X_val, y_val, n_trial):
+    study = optuna.create_study(
+        study_name='nb_param_opt',
+        direction='maximize', 
+        sampler=TPESampler(seed=42)
+        )
+    
+    study.optimize(lambda trial: objectiveSVC(
+        trial, X_tr, y_tr, X_val, y_val),
+        n_trials=n_trial)
+    
+    best_nb = SVC(**study.best_params).fit(
+        pd.concat([X_tr, X_val], axis=0),
+        pd.concat([y_tr, y_val], axis=0),
+        )
+    
+    return best_nb, study.best_value, study
+
+
+def objectiveXGB(trial: Trial, X, y, X_val, y_val):
+    params = {
+        'objective': trial.suggest_categorical('objective', ['multi:softmax']),
+        'n_estimators': trial.suggest_int('n_estimators', 1, 100),
+        'max_depth': trial.suggest_int('max_depth', 3, 30),
+        'learning_rate': trial.suggest_float('learning_rate', 0.001, 1),
+        'gamma': trial.suggest_float('gamma', 0, 10),
+        'min_child_weight': trial.suggest_int('min_child_weight', 1, 100),
+        # 'colsample_bytree': trial.suggest_float('colsample_bytree', 0.1, 1),
+        # 'colsample_bylevel': trial.suggest_float('colsample_bylevel', 0.1, 1),
+        # 'colsample_bynode': trial.suggest_float('colsample_bynode', 0.1, 1),
+        'n_jobs': trial.suggest_categorical('n_jobs', [cpu_use]),
+        'random_state': trial.suggest_categorical('random_state', [42]),
+        }
+    
+    model = XGBClassifier(**params)
+    xgb_model = model.fit(X, y)
+    
+    score = f1_score(y_val, xgb_model.predict(X_val), average='macro')
+
+    return score
+
+
+def get_xgb_optuna(X_tr, y_tr, X_val, y_val, n_trial):
+    study = optuna.create_study(
+        study_name='xgb_param_opt',
+        direction='maximize', 
+        sampler=TPESampler(seed=42)
+        )
+    
+    study.optimize(lambda trial: objectiveXGB(
+        trial, X_tr, y_tr, X_val, y_val),
+        n_trials=n_trial)
+    
+    best_xgb = XGBClassifier(**study.best_params).fit(
+        pd.concat([X_tr, X_val], axis=0),
+        pd.concat([y_tr, y_val], axis=0),
+        )
+    
+    return best_xgb, study.best_value, study
+
+
 def objectiveRF(trial: Trial, X, y, X_val, y_val):
     params = {
         'n_estimators': trial.suggest_categorical('n_estimators', [200]),
@@ -78,6 +154,7 @@ if __name__ == '__main__':
     import itertools as it
     import optuna
     import joblib
+    import re
     
     from matplotlib import pyplot as plt
     from copy import deepcopy
@@ -93,13 +170,15 @@ if __name__ == '__main__':
     from optuna import visualization
     from optuna.samplers import TPESampler    
     from multiprocessing import cpu_count
+    from xgboost import XGBClassifier
+    from sklearn.svm import SVC
     
     #%% Overall settings
     run_new_submission = False
     print('\nMake new submission file <{}>'.format(
         run_new_submission))
     
-    cpu_use = 5#int(3*cpu_count()/4)
+    cpu_use = 5 #int(2*cpu_count()/4)
 
     #%% Load data
     years = [2017, 2018, 2019, 2020]
@@ -158,7 +237,7 @@ if __name__ == '__main__':
         dict_tr = {k:v.replace(pre, post) for k, v in dict_tr.items()}
         dict_test = {k:v.replace(pre, post) for k, v in dict_test.items()}
 
-    #%% Remove space
+    # Remove space
     for k, v in dict_tr.items():
         for col in v.columns:
             try: 
@@ -180,6 +259,38 @@ if __name__ == '__main__':
                 else:
                     v[col] = v[col].str.replace(' ', '')
         dict_test[k] = v
+    
+    #%% (Test) column integration
+    def column_integration(df):
+        cols = list(df.columns)
+        for c in cols:
+            try:
+                c1, c2 = c.split('_')
+                if re.match('[A-Za-z]+', c1).group() in ['aq', 'kq', 'saq']:
+                    neighbor = []
+                    for cn in cols:
+                        try:
+                            cn1, cn2 = cn.split('_')
+                            if c1 == cn1 and c2 != cn2:
+                                neighbor.append(cn)
+                        except:
+                            continue
+                    
+                    new_col = df[c].map(str)
+                    for cn in neighbor:
+                        new_col += df[cn].map(str)
+                    
+                    # cols.remove(neighbor)
+                    df[c1] = new_col
+                    df = df.drop(columns=[c]+neighbor)
+                    
+            except:
+                continue
+            
+        return df
+    
+    dict_tr = {k: column_integration(v) for k, v in dict_tr.items()}
+    dict_test = {k: column_integration(v) for k, v in dict_test.items()}
     
     #%% (Test) Word integration by similarity
     '''
@@ -268,17 +379,41 @@ if __name__ == '__main__':
     #%% Add values to the dataset to make it positive
     # It is necessary for Multinomial Naive Bayes model
     '''
-    min_val_data = 0
+    for k, v in dict_tr.items():
+        dict_tr[k] -= v.min().min()
+        dict_test[k] -= v.min().min()
+        print(f"Min val of data {k} is {v.min().min()}")
+    '''
     
-    for df in list_tr+list_test:
-        min_val_data = min(min_val_data, df.min().min())
-        
-    for df in list_tr+list_test:
-        for col in df.columns:
-            try:
-                df[col] -= min_val_data
-            except TypeError:
-                pass
+    #%% (Test) Feature importance
+    '''
+    dir_org = os.getcwd()
+    os.chdir(glob(glob('./submission_save/*')[-1])[0])
+    pre_study = joblib.load('param_opt_rslt')#('best_mdl.pkl')
+    pre_subm = pd.read_csv(glob('*.csv')[0])
+    os.chdir(dir_org)
+    
+    pre_mdl = \
+        {y:RandomForestClassifier(**pre_study[y].best_params).fit(
+            dict_tr[y].drop(columns='knowcode'),
+            dict_tr[y].knowcode) for y in years}
+    
+    raise NotImplementedError
+    
+    pre_pred = [pd.Series(index=dict_test[y].index,
+                          data=pre_mdl[y].predict(dict_test[y]),
+                          name='knowcode')
+                for y in years]
+    pre_pred = pd.concat(pre_pred, axis=0)
+    
+    pre_pred = pre_pred.reset_index()
+    
+    comp_sub_pred = pd.DataFrame(data={
+        'subm':pre_subm.knowcode,
+        'pred':pre_pred.knowcode,
+        'minus':pre_subm.knowcode-pre_pred.knowcode})
+    
+    raise NotImplementedError
     '''
     
     #%% Train validation split (by stratify)
@@ -296,13 +431,26 @@ if __name__ == '__main__':
         y_val[y] = val.knowcode
     
     #%% Train naive bayes models
-    mdl_nb = {y:GaussianNB().fit(X_tr[y], y_tr[y]) for y in years}
+    #mdl_nb = {y:GaussianNB().fit(X_tr[y], y_tr[y]) for y in years}
     
     #%% RandomForest hyperparameter search by optuna
-    rslt_param_opt = \
-        {y: get_rf_optuna(X_tr[y], y_tr[y], X_val[y], y_val[y], 30)
-         for y in years}
+    mdl_selc = 'rf'
+    num_trial = 30
+    print('='*15, f'Model selected [{mdl_selc}]', '='*15)
     
+    if mdl_selc == 'rf':
+        rslt_param_opt = \
+            {y: get_rf_optuna(X_tr[y], y_tr[y], X_val[y], y_val[y], num_trial)
+             for y in years}
+    elif mdl_selc == 'xgb':
+        rslt_param_opt = \
+            {y: get_xgb_optuna(X_tr[y], y_tr[y], X_val[y], y_val[y], num_trial)
+             for y in years}
+    elif mdl_selc == 'svc':
+        rslt_param_opt = \
+            {y: get_svc_optuna(X_tr[y], y_tr[y], X_val[y], y_val[y], num_trial)
+             for y in years}
+            
     #%% Divide parameter optimization results
     mdl_best = {k:v[0] for k, v in rslt_param_opt.items()}
     dict_val_f1 = {k:v[1] for k, v in rslt_param_opt.items()}
