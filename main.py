@@ -13,6 +13,84 @@ Main script
 from optuna import Trial
 
 #%% Custom functions
+def objectiveXGBRF(trial: Trial, X, y, X_val, y_val):
+    params = {
+        'n_estimators': trial.suggest_categorical('n_estimators', [200]),
+        'objective':trial.suggest_categorical('objective', ['multi:softmax']),
+        'max_depth': trial.suggest_int('max_depth', 3, 30),
+        # 'subsample': trial.suggest_float('subsample', 0.4, 1),
+        'colsample_bynode': trial.suggest_float('colsample_bynode', 0.2, 1),
+        # 'colsample_bylevel': trial.suggest_float('colsample_bylevel', 0.5, 1),
+        # 'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1),
+        'n_jobs': trial.suggest_categorical('n_jobs', [cpu_use]),
+        'random_state': trial.suggest_categorical('random_state', [42]),
+        }
+    
+    model = XGBRFClassifier(**params)
+    xgbrf_model = model.fit(X, y)
+    
+    score = f1_score(y_val, xgbrf_model.predict(X_val), average='macro')
+
+    return score
+
+
+def get_xgbrf_optuna(X_tr, y_tr, X_val, y_val, n_trial):
+    study = optuna.create_study(
+        study_name='nb_param_opt',
+        direction='maximize', 
+        sampler=TPESampler(seed=42)
+        )
+    
+    study.optimize(lambda trial: objectiveXGBRF(
+        trial, X_tr, y_tr, X_val, y_val),
+        n_trials=n_trial)
+    
+    best_xgbrf = XGBRFClassifier(**study.best_params).fit(
+        pd.concat([X_tr, X_val], axis=0),
+        pd.concat([y_tr, y_val], axis=0),
+        )
+    
+    return best_xgbrf, study.best_value, study
+
+
+def objectiveLR(trial: Trial, X, y, X_val, y_val):
+    params = {
+        'penalty': trial.suggest_categorical('penalty',
+                                             ['l1', 'l2', 'elasticnet']),
+        'solver': trial.suggest_categorical('solver',
+                                             ['saga']),
+        'C': trial.suggest_loguniform('C', 1e-3, 1e+3),
+        'n_jobs': trial.suggest_categorical('n_jobs', [cpu_use]),
+        'random_state': trial.suggest_categorical('random_state', [42]),
+        }
+    
+    model = LogisticRegression(**params)
+    lr_model = model.fit(X, y)
+    
+    score = f1_score(y_val, lr_model.predict(X_val), average='macro')
+
+    return score
+
+
+def get_lr_optuna(X_tr, y_tr, X_val, y_val, n_trial):
+    study = optuna.create_study(
+        study_name='nb_param_opt',
+        direction='maximize', 
+        sampler=TPESampler(seed=42)
+        )
+    
+    study.optimize(lambda trial: objectiveLR(
+        trial, X_tr, y_tr, X_val, y_val),
+        n_trials=n_trial)
+    
+    best_lr = LogisticRegression(**study.best_params).fit(
+        pd.concat([X_tr, X_val], axis=0),
+        pd.concat([y_tr, y_val], axis=0),
+        )
+    
+    return best_lr, study.best_value, study
+
+
 def objectiveSVC(trial: Trial, X, y, X_val, y_val):
     params = {
         'kernel': trial.suggest_categorical('kernel', ['rbf', 'sigmoid']),
@@ -39,12 +117,12 @@ def get_svc_optuna(X_tr, y_tr, X_val, y_val, n_trial):
         trial, X_tr, y_tr, X_val, y_val),
         n_trials=n_trial)
     
-    best_nb = SVC(**study.best_params).fit(
+    best_svc = SVC(**study.best_params).fit(
         pd.concat([X_tr, X_val], axis=0),
         pd.concat([y_tr, y_val], axis=0),
         )
     
-    return best_nb, study.best_value, study
+    return best_svc, study.best_value, study
 
 
 def objectiveXGB(trial: Trial, X, y, X_val, y_val):
@@ -94,9 +172,8 @@ def objectiveRF(trial: Trial, X, y, X_val, y_val):
         'n_estimators': trial.suggest_categorical('n_estimators', [200]),
         'criterion':trial.suggest_categorical('criterion', ['entropy']),
         'max_depth': trial.suggest_int('max_depth', 3, 30),
-        # 'max_features': trial.suggest_categorical(
-        #     'max_features', [None, 'sqrt', 'log2']),
         'max_features': trial.suggest_float('max_features', 0.1, 1),
+        # 'max_samples': trial.suggest_float('max_samples', 0.5, 1),
         'n_jobs': trial.suggest_categorical('n_jobs', [cpu_use]),
         'random_state': trial.suggest_categorical('random_state', [42]),
         }
@@ -170,15 +247,16 @@ if __name__ == '__main__':
     from optuna import visualization
     from optuna.samplers import TPESampler    
     from multiprocessing import cpu_count
-    from xgboost import XGBClassifier
+    from xgboost import XGBClassifier, XGBRFClassifier
     from sklearn.svm import SVC
+    from sklearn.linear_model import LogisticRegression
     
     #%% Overall settings
     run_new_submission = False
     print('\nMake new submission file <{}>'.format(
         run_new_submission))
     
-    cpu_use = 5 #int(2*cpu_count()/4)
+    cpu_use = int(3*cpu_count()/4)
 
     #%% Load data
     years = [2017, 2018, 2019, 2020]
@@ -260,7 +338,40 @@ if __name__ == '__main__':
                     v[col] = v[col].str.replace(' ', '')
         dict_test[k] = v
         
-    #%% (Test) Manual elements replacing for important features
+    # Preprocess the columns bq31, bq30 for 2017, 2018 respectively
+    def process_tool_col(y, df):
+        if y == 2017:
+            s = df.bq31
+            # Make all English letters to uppercase letters
+            s = s.str.upper() 
+            # Change - into ,
+            s = s.str.replace('-', ',')
+            # Change . into ,
+            s = s.str.replace('.', ',')
+            # Remove '등'
+            s = s.str.replace('등', '')
+            df.bq31 = s
+        elif y == 2018:
+            s = df.bq30
+            # Make all English letters to uppercase letters
+            s = s.str.upper() 
+            # Change - into ,
+            s = s.str.replace('-', ',')
+            # Change . into ,
+            s = s.str.replace('.', ',')
+            # Remove '등'
+            s = s.str.replace('등', '')
+            df.bq30 = s
+        else:
+            pass # There is no column of tools for job in 2019, 2020
+        
+        return df
+    
+    
+    dict_tr = {k: process_tool_col(k, v) for k, v in dict_tr.items()}
+    dict_test = {k: process_tool_col(k, v) for k, v in dict_test.items()}
+    
+    #%% Manual elements replacing for important features
     from difflib import SequenceMatcher
     
     a = dict_tr[2018]['bq4_1a']
@@ -481,7 +592,7 @@ if __name__ == '__main__':
     dict_tr = {k:manual_change(k, v) for k, v in dict_tr.items()}
     dict_test = {k:manual_change(k, v) for k, v in dict_test.items()}
     
-    #%% (Test) Remove contents in parenthesis
+    #%% Remove contents in parenthesis
     def rmv_parenthesis(df):
         for col in df.columns:
             try:
@@ -501,23 +612,82 @@ if __name__ == '__main__':
     dict_test = {k: rmv_parenthesis(v) for k, v in dict_test.items()}    
     
     #%% (Test) Make One-hot encoding DataFrame by 'bq31'
-    def one_hot_bq31(df):
+    def one_hot_tool_col(df):
+        s = df.bq31
         vals = []
-        for i, v in df['bq31'].iteritems():
+        for i, v in s.iteritems():
             vals += v.split(',')
         
-        df_bq31 = pd.DataFrame(np.zeros(shape=(len(df.index), len(vals))),
+        vals = list(set(vals))
+        
+        df_tool = pd.DataFrame(np.zeros(shape=(len(df.index), len(vals))),
                                index=df.index,
                                columns=vals,
                                dtype='int32')
         
-        for i, v in df['bq31'].iteritems():
-            df_bq31.loc[i, v.split(',')] = 1
-        
-        
-        return df_bq31
+        for i, v in tqdm(s.iteritems(), total=len(df.index)):
+            df_tool.loc[i, list(set(v.split(',')))] = 1
+            
+        return df_tool
     
-    a = one_hot_bq31(dict_tr[2017])
+    df_tool = one_hot_tool_col(dict_tr[2017])
+
+    #%% (Test) Simple MLP
+    import tensorflow as tf
+    from tensorflow.keras.models import load_model, Model
+    from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+    from tensorflow.keras.layers import Input, Dense
+    from tensorflow.keras.optimizers import Adam
+    from keras.utils.np_utils import to_categorical
+    
+    df_tool['knowcode'] = dict_tr[2017].knowcode
+    encdr_t_knowcode = LabelEncoder()
+    df_tool.knowcode = encdr_t_knowcode.fit_transform(df_tool.knowcode)
+    
+    one_hot_knowcode = to_categorical(df_tool.knowcode)
+    
+    X_tool_tr, X_tool_val = train_test_split(df_tool, test_size=0.2,
+                                         shuffle=True, 
+                                         stratify=df_tool.knowcode)
+    
+    y_tool_tr = one_hot_knowcode[X_tool_tr.index]
+    y_tool_val = one_hot_knowcode[X_tool_val.index]
+    
+    dir_model_save = './model_save/simple_mlp/'
+    if not os.path.exists(dir_model_save):
+        os.makedirs(dir_model_save)
+        
+    es = EarlyStopping(monitor='val_loss', patience=20)
+    model_path = dir_model_save + '{epoch:02d}_{val_loss:.5f}.h5'
+        
+    mc = ModelCheckpoint(filepath=model_path,
+                         monitor='val_loss',
+                         verbose=0,
+                         mode='auto',
+                         save_best_only=True)
+    
+    visible = Input( shape=(X_tool_tr.shape[1],) )
+    hidden = Dense(1024, activation='relu')(visible)
+    hidden = Dense(1024, activation='relu')(hidden)
+    hidden = Dense(1024, activation='relu')(hidden)
+    output = Dense(one_hot_knowcode.shape[1], activation='softmax')(hidden)
+     
+    model = Model(inputs=visible, outputs=output)
+    opt = Adam(learning_rate=0.01)
+    model.compile(optimizer=opt, loss='categorical_crossentropy',
+                  metrics=['categorical_accuracy'])
+    print(model.summary())
+                
+    model.fit(X_tool_tr, y_tool_tr)
+    
+    history=model.fit(X_tool_tr, y_tool_tr,
+                      validation_data=(X_tool_val, y_tool_val),
+                      epochs=100,
+                      batch_size=8,
+                       callbacks=[mc, es],
+                      verbose=1)
+    
+    raise NotImplementedError
     
     #%% (Test) column integration
     '''
@@ -636,6 +806,10 @@ if __name__ == '__main__':
                     df[col] = df[col].apply(
                         lambda x: -3 if len(x)>=2 else x)
                     
+    #%% Decrease data size by changing dtype
+    dict_tr = {k: v.astype('int32') for k, v in dict_tr.items()}    
+    dict_test = {k: v.astype('int32') for k, v in dict_test.items()}
+    
     #%% (Test) Remove every feature with string value
     '''
     dict_tr = {k:v.drop(columns=dict_encoder[k].keys()) 
@@ -698,14 +872,37 @@ if __name__ == '__main__':
         y_tr[y] = tr.knowcode
         X_val[y] = val.drop(columns='knowcode')
         y_val[y] = val.knowcode
+        
+    #%% (Test) Make One-hot encoding DataFrame by 'bq31'
+    '''
+    X_tr_bq31 = df_bq31.loc[X_tr[2017].index, :]   
+    X_val_bq31 = df_bq31.loc[X_val[2017].index, :]     
+    
+    # tune = GaussianNB()
+    # tune.fit(X_tr_bq31, y_tr[2017])
+
+    tune = get_svc_optuna(X_tr_bq31, y_tr[2017],
+                          X_val_bq31, y_val[2017], 
+                          20)
+    
+    tune = SVC(**{'kernel': 'sigmoid', 
+                  # 'C': 24.658329458549105,
+                  'gamma': 'scale'})
+    tune.fit(X_tr_bq31, y_tr[2017])
+    
+    score = f1_score(y_val[2017], tune.predict(X_val_bq31), average='macro')
+    
+    X_tr[2017]['bq31'] = tune.predict(X_tr_bq31)
+    X_val[2017]['bq31'] = tune.predict(X_val_bq31)
+    '''
     
     #%% Train naive bayes models
     #mdl_nb = {y:GaussianNB().fit(X_tr[y], y_tr[y]) for y in years}
     
     #%% (Test) result of manual change
     '''
-    p = {'n_estimators': 200, 'criterion': 'entropy', 'max_depth': 14,
-         'max_features': 0.3731016707997021, 'n_jobs': 5, 'random_state': 42}
+    p = {'n_estimators': 200, 'criterion': 'entropy', 'max_depth': 13,
+         'max_features': 0.33951195705535725, 'n_jobs': 5, 'random_state': 42}
     m = RandomForestClassifier(**p).fit(X_tr[2017], y_tr[2017])
     fi = pd.DataFrame(data={'nm': X_tr[2017].columns,
                             'sc': m.feature_importances_}).sort_values(
@@ -713,11 +910,10 @@ if __name__ == '__main__':
     v = deepcopy(X_val[2017])
     v['true'] = y_val[2017]
     v['pred'] = m.predict(X_val[2017])
-    vv = v.loc[:, ['bq1', 'bq4_1a', 'true', 'pred']]
+    vv = v.loc[:, ['bq1', 'bq4_1a', 'bq31', 'true', 'pred']]
     vv['min'] = vv.true-vv.pred
     vv['bq4_1a'] = dict_encoder[2017]['bq4_1a'].inverse_transform(vv['bq4_1a'])
     '''
-    
     
     #%% RandomForest hyperparameter search by optuna
     mdl_selc = 'rf'
@@ -731,6 +927,11 @@ if __name__ == '__main__':
     elif mdl_selc == 'xgb':
         rslt_param_opt = \
             {y: get_xgb_optuna(X_tr[y], y_tr[y], X_val[y], y_val[y], num_trial)
+             for y in years}
+    elif mdl_selc == 'xgbrf':
+        rslt_param_opt = \
+            {y: get_xgbrf_optuna(X_tr[y], y_tr[y], X_val[y], y_val[y],
+                                 num_trial)
              for y in years}
     elif mdl_selc == 'svc':
         rslt_param_opt = \
