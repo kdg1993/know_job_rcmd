@@ -13,6 +13,88 @@ Main script
 from optuna import Trial
 
 #%% Custom functions
+def objectiveSVC_RF(trial: Trial, year, X, y, X_val, y_val, df_tool):
+    params = {
+        'kernel': trial.suggest_categorical('kernel', ['sigmoid']),
+        'C': trial.suggest_loguniform('C', 1e-2, 1e+2),
+        'gamma': trial.suggest_categorical('gamma', ['scale', 'auto']),
+        'n_estimators': trial.suggest_categorical('n_estimators', [200]),
+        'criterion':trial.suggest_categorical('criterion', ['entropy']),
+        'max_depth': trial.suggest_int('max_depth', 3, 30),
+        'max_features': trial.suggest_float('max_features', 0.1, 1),
+        'n_jobs': trial.suggest_categorical('n_jobs', [cpu_use]),
+        'random_state': trial.suggest_categorical('random_state', [42]),
+        }
+        
+    X_tool = df_tool.loc[X.index, :]
+    X_tool_val = df_tool.loc[X_val.index, :]
+    
+    algo_svc = SVC(**{k:params[k] for k in ['kernel', 'C', 'gamma']})
+    model_svc = algo_svc.fit(X_tool, y)
+    
+    pred_by_tool = model_svc.predict(X_tool)
+    pred_by_tool_val = model_svc.predict(X_tool_val)
+    if year == 2017:
+        X.bq31 = pred_by_tool
+        X_val.bq31 = pred_by_tool_val
+    elif year == 2018:
+        X.bq30 = pred_by_tool
+        X_val.bq30 = pred_by_tool_val
+    
+    algo_rf = RandomForestClassifier(
+        **{k:params[k] for k in [
+            'n_estimators', 'criterion', 'max_depth', 'max_features',
+            'n_jobs', 'random_state']})
+    model_rf = algo_rf.fit(X, y)
+    
+    score = f1_score(y_val, 
+                     model_rf.predict(X_val), average='macro')
+      
+    return score
+
+
+def get_svc_rf_optuna(year, X_tr, y_tr, X_val, y_val, df_tool, n_trial):
+    study = optuna.create_study(
+        study_name='svc_rf_param_opt',
+        direction='maximize', 
+        sampler=TPESampler(seed=42)
+        )
+    
+    if (year == 2017) or (year == 2018):
+        study.optimize(lambda trial: objectiveSVC_RF(
+            trial, year, X_tr, y_tr, X_val, y_val, df_tool),
+            n_trials=n_trial)
+        
+        best_svc = SVC(
+            **{k:study.best_params[k] for k in ['kernel', 'C', 'gamma']}
+            ).fit(
+            pd.concat([X_tr, X_val], axis=0),
+            pd.concat([y_tr, y_val], axis=0),
+            )
+        
+        best_rf = RandomForestClassifier(
+            **{k:study.best_params[k] for k in [
+                'n_estimators', 'criterion', 'max_depth', 'max_features',
+                'n_jobs', 'random_state']}
+            ).fit(
+            pd.concat([X_tr, X_val], axis=0),
+            pd.concat([y_tr, y_val], axis=0),
+            )
+        
+        return (best_svc, best_rf), study.best_value, study
+    else:
+        study.optimize(lambda trial: objectiveRF(
+             trial, X_tr, y_tr, X_val, y_val),
+             n_trials=n_trial)            
+    
+        best_rf = RandomForestClassifier(**study.best_params).fit(
+            pd.concat([X_tr, X_val], axis=0),
+            pd.concat([y_tr, y_val], axis=0),
+            )
+
+        return best_rf, study.best_value, study
+
+
 def objectiveXGBRF(trial: Trial, X, y, X_val, y_val):
     params = {
         'n_estimators': trial.suggest_categorical('n_estimators', [200]),
@@ -74,7 +156,7 @@ def objectiveLR(trial: Trial, X, y, X_val, y_val):
 
 def get_lr_optuna(X_tr, y_tr, X_val, y_val, n_trial):
     study = optuna.create_study(
-        study_name='nb_param_opt',
+        study_name='lr_param_opt',
         direction='maximize', 
         sampler=TPESampler(seed=42)
         )
@@ -93,8 +175,8 @@ def get_lr_optuna(X_tr, y_tr, X_val, y_val, n_trial):
 
 def objectiveSVC(trial: Trial, X, y, X_val, y_val):
     params = {
-        'kernel': trial.suggest_categorical('kernel', ['rbf', 'sigmoid']),
-        'C': trial.suggest_loguniform('C', 1e-3, 1e+3),
+        'kernel': trial.suggest_categorical('kernel', ['sigmoid']),
+        'C': trial.suggest_loguniform('C', 1e-2, 1e+2),
         'gamma': trial.suggest_categorical('gamma', ['scale', 'auto'])
         }
     
@@ -108,7 +190,7 @@ def objectiveSVC(trial: Trial, X, y, X_val, y_val):
 
 def get_svc_optuna(X_tr, y_tr, X_val, y_val, n_trial):
     study = optuna.create_study(
-        study_name='nb_param_opt',
+        study_name='svc_param_opt',
         direction='maximize', 
         sampler=TPESampler(seed=42)
         )
@@ -242,7 +324,7 @@ if __name__ == '__main__':
     from sklearn.preprocessing import LabelEncoder
     from sklearn.metrics import f1_score
     from sklearn.model_selection import train_test_split
-    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.ensemble import RandomForestClassifier, VotingClassifier
     from scipy.stats import hmean
     from optuna import visualization
     from optuna.samplers import TPESampler    
@@ -288,6 +370,10 @@ if __name__ == '__main__':
     print('Test - submission : ', set(idx_test) - set(df_smp_subm.idx))
     print('submission - Test : ', set(df_smp_subm.idx) - set(idx_test))  
     
+    # Remove variables for get memory
+    del idx_test
+    del df_smp_subm
+    
     #%% Check data column match
     # Check column mismatch between train and test
     for year in years:
@@ -297,6 +383,10 @@ if __name__ == '__main__':
         print('\nColumn mismatch between train and test')
         print(year)
         print('Symmetric difference : ', c_tr.symmetric_difference(c_test))
+        
+    # Remove variables for get more memory
+    del c_tr
+    del c_test
     
     #%% Data preprocessing
     # Set index
@@ -612,8 +702,14 @@ if __name__ == '__main__':
     dict_test = {k: rmv_parenthesis(v) for k, v in dict_test.items()}    
     
     #%% (Test) Make One-hot encoding DataFrame by 'bq31'
-    def one_hot_tool_col(df):
-        s = df.bq31
+    def one_hot_tool_col(y, df):
+        if y == 2017:
+            s = df.bq31
+        elif y == 2018:
+            s = df.bq30
+        else:
+            return
+        
         vals = []
         for i, v in s.iteritems():
             vals += v.split(',')
@@ -630,65 +726,8 @@ if __name__ == '__main__':
             
         return df_tool
     
-    df_tool = one_hot_tool_col(dict_tr[2017])
+    df_tool = {y:one_hot_tool_col(y, dict_tr[y]) for y in years}
 
-    #%% (Test) Simple MLP
-    import tensorflow as tf
-    from tensorflow.keras.models import load_model, Model
-    from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
-    from tensorflow.keras.layers import Input, Dense
-    from tensorflow.keras.optimizers import Adam
-    from keras.utils.np_utils import to_categorical
-    
-    df_tool['knowcode'] = dict_tr[2017].knowcode
-    encdr_t_knowcode = LabelEncoder()
-    df_tool.knowcode = encdr_t_knowcode.fit_transform(df_tool.knowcode)
-    
-    one_hot_knowcode = to_categorical(df_tool.knowcode)
-    
-    X_tool_tr, X_tool_val = train_test_split(df_tool, test_size=0.2,
-                                         shuffle=True, 
-                                         stratify=df_tool.knowcode)
-    
-    y_tool_tr = one_hot_knowcode[X_tool_tr.index]
-    y_tool_val = one_hot_knowcode[X_tool_val.index]
-    
-    dir_model_save = './model_save/simple_mlp/'
-    if not os.path.exists(dir_model_save):
-        os.makedirs(dir_model_save)
-        
-    es = EarlyStopping(monitor='val_loss', patience=20)
-    model_path = dir_model_save + '{epoch:02d}_{val_loss:.5f}.h5'
-        
-    mc = ModelCheckpoint(filepath=model_path,
-                         monitor='val_loss',
-                         verbose=0,
-                         mode='auto',
-                         save_best_only=True)
-    
-    visible = Input( shape=(X_tool_tr.shape[1],) )
-    hidden = Dense(1024, activation='relu')(visible)
-    hidden = Dense(1024, activation='relu')(hidden)
-    hidden = Dense(1024, activation='relu')(hidden)
-    output = Dense(one_hot_knowcode.shape[1], activation='softmax')(hidden)
-     
-    model = Model(inputs=visible, outputs=output)
-    opt = Adam(learning_rate=0.01)
-    model.compile(optimizer=opt, loss='categorical_crossentropy',
-                  metrics=['categorical_accuracy'])
-    print(model.summary())
-                
-    model.fit(X_tool_tr, y_tool_tr)
-    
-    history=model.fit(X_tool_tr, y_tool_tr,
-                      validation_data=(X_tool_val, y_tool_val),
-                      epochs=100,
-                      batch_size=8,
-                       callbacks=[mc, es],
-                      verbose=1)
-    
-    raise NotImplementedError
-    
     #%% (Test) column integration
     '''
     def column_integration(df):
@@ -807,8 +846,17 @@ if __name__ == '__main__':
                         lambda x: -3 if len(x)>=2 else x)
                     
     #%% Decrease data size by changing dtype
+    # tr_org = deepcopy(dict_tr)
+    # test_org = deepcopy(dict_test)
+    
     dict_tr = {k: v.astype('int32') for k, v in dict_tr.items()}    
     dict_test = {k: v.astype('int32') for k, v in dict_test.items()}
+    
+    # sum_tr = {k: np.sum(np.sum(dict_tr[k]-tr_org[k])) for k in dict_tr.keys()}
+    # sum_test = {k: np.sum(np.sum(dict_test[k]-test_org[k])) for k in dict_test.keys()}
+    
+    # print(sum_tr)
+    # print(sum_test)
     
     #%% (Test) Remove every feature with string value
     '''
@@ -873,6 +921,94 @@ if __name__ == '__main__':
         X_val[y] = val.drop(columns='knowcode')
         y_val[y] = val.knowcode
         
+    del dict_tr # Remove for get more memory
+    
+    #%% (Test) Params opt by SVC for one-hot encoding data
+    '''
+    test_param_opt = \
+        {y: get_svc_optuna(df_tool.loc[X_tr[2017].index, :],
+                           y_tr[y],
+                           df_tool.loc[X_val[2017].index, :], 
+                           y_val[y],
+                           40)
+         for y in [2017]}
+        
+    #% (Test) Merge df_tool into original data set (only for 2017)
+    X_tr[2017] = pd.concat([X_tr[2017],
+                            df_tool.loc[X_tr[2017].index, :]], 
+                           axis=1)
+    
+    X_val[2017] = pd.concat([X_val[2017],
+                             df_tool.loc[X_val[2017].index, :]], 
+                            axis=1)
+    '''
+    
+    #%% (Test) Simple MLP
+    import tensorflow as tf
+    from tensorflow.keras.models import load_model, Model
+    from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+    from tensorflow.keras.layers import Input, Dense, Dropout
+    from tensorflow.keras.optimizers import Adam
+    from keras.utils.np_utils import to_categorical
+    
+    # df_tool['knowcode'] = dict_tr[2017].knowcode
+    # encdr_t_knowcode = LabelEncoder()
+    # df_tool.knowcode = encdr_t_knowcode.fit_transform(df_tool.knowcode)
+    
+    # one_hot_knowcode = to_categorical(df_tool.knowcode)
+    
+    # X_tool_tr, X_tool_val = train_test_split(df_tool, test_size=0.2,
+    #                                      shuffle=True, 
+    #                                      stratify=df_tool.knowcode)
+    
+    # y_tool_tr = one_hot_knowcode[X_tool_tr.index]
+    # y_tool_val = one_hot_knowcode[X_tool_val.index]
+    
+    dir_model_save = './model_save/simple_mlp/'
+    if not os.path.exists(dir_model_save):
+        os.makedirs(dir_model_save)
+        
+    es = EarlyStopping(monitor='val_loss', patience=20)
+    model_path = dir_model_save + \
+        '{epoch:02d}_{val_categorical_accuracy:.5f}.h5'
+        
+    mc = ModelCheckpoint(filepath=model_path,
+                         monitor='val_categorical_accuracy',
+                         verbose=0,
+                         mode='auto',
+                         save_best_only=True)
+    
+    smp_year = 2017
+    len_input = len(X_tr[smp_year].columns) + len(df_tool[smp_year].columns)
+    
+    visible = Input( shape=(len_input,) )
+    hidden = Dense(1024, activation='relu')(visible)
+    hidden = Dropout(0.2)(hidden)
+    hidden = Dense(1024, activation='relu')(hidden)
+    hidden = Dropout(0.2)(hidden)
+    hidden = Dense(1024, activation='relu')(hidden)
+    hidden = Dropout(0.2)(hidden)
+    output = Dense(1, activation='softmax')(hidden)
+     
+    model = Model(inputs=visible, outputs=output)
+    opt = Adam(learning_rate=0.01)
+    model.compile(optimizer=opt, loss='sparse_categorical_crossentropy',
+                  metrics=['sparse_categorical_accuracy'])
+    print(model.summary())
+    
+    history=model.fit(
+        pd.concat([X_tr[smp_year], 
+                  df_tool[smp_year].loc[X_tr[smp_year].index, :]], axis=1),
+        y_tr[smp_year],
+        validation_data=(
+                pd.concat([X_val[smp_year], 
+                           df_tool[smp_year].loc[X_val[smp_year].index, :]], axis=1),
+                y_val[smp_year]),
+        epochs=100,
+        batch_size=8,
+        callbacks=[mc, es],
+        verbose=1)
+    
     #%% (Test) Make One-hot encoding DataFrame by 'bq31'
     '''
     X_tr_bq31 = df_bq31.loc[X_tr[2017].index, :]   
@@ -897,7 +1033,7 @@ if __name__ == '__main__':
     '''
     
     #%% Train naive bayes models
-    #mdl_nb = {y:GaussianNB().fit(X_tr[y], y_tr[y]) for y in years}
+    mdl_nb = {y:GaussianNB().fit(X_tr[y], y_tr[y]) for y in years}
     
     #%% (Test) result of manual change
     '''
@@ -918,7 +1054,7 @@ if __name__ == '__main__':
     #%% RandomForest hyperparameter search by optuna
     mdl_selc = 'rf'
     num_trial = 30
-    print('='*15, f'Model selected [{mdl_selc}]', '='*15)
+    print('='*15, f'Model selected [{mdl_selc}, trial: {num_trial}]', '='*15)
     
     if mdl_selc == 'rf':
         rslt_param_opt = \
@@ -937,7 +1073,15 @@ if __name__ == '__main__':
         rslt_param_opt = \
             {y: get_svc_optuna(X_tr[y], y_tr[y], X_val[y], y_val[y], num_trial)
              for y in years}
-            
+    elif mdl_selc == 'svc_rf':
+        rslt_param_opt = \
+            {y: get_svc_rf_optuna(y, X_tr[y], y_tr[y], X_val[y], y_val[y],
+                                  df_tool[y], num_trial)
+             for y in years}
+    else:
+        print('Check model selection variable')
+        raise ValueError
+        
     #%% Divide parameter optimization results
     mdl_best = {k:v[0] for k, v in rslt_param_opt.items()}
     dict_val_f1 = {k:v[1] for k, v in rslt_param_opt.items()}
@@ -950,11 +1094,42 @@ if __name__ == '__main__':
         hmean([v for k, v in dict_val_f1.items()]), 3)))
     
     #%% Feature importance
-    f_imp = {y:pd.DataFrame(data={'f_nm': dict_test[y].columns,
-                                  'score': mdl_best[y].feature_importances_}).\
-             sort_values(by='score', ascending=False)
-             for y in years}
+    try:
+        f_imp = {y:pd.DataFrame(
+            data={'f_nm': dict_test[y].columns,
+                  'score': mdl_best[y].feature_importances_}).\
+                 sort_values(by='score', ascending=False)
+                 for y in years}
+    except AttributeError:
+        f_imp = {y:pd.DataFrame(data={
+            'f_nm': dict_test[y].columns,
+            'score': mdl_best[y][1].feature_importances_}).\
+                 sort_values(by='score', ascending=False)
+             if y == 2017 or y == 2018 else 
+                     pd.DataFrame(
+                         data={'f_nm': dict_test[y].columns,
+                               'score': mdl_best[y].feature_importances_}).\
+                              sort_values(by='score', ascending=False)
+                 for y in years}
+            
+    #%% (Test) Voting Classifier
+    mdl_vc = {y:VotingClassifier(estimators=[
+            ('rf', mdl_best[y]), 
+            ('nb', mdl_nb[y])],
+            voting='soft',
+            n_jobs=1,
+            verbose=True,
+            weights=[2, 1]).fit(
+                X_tr[y], y_tr[y])
+              for y in years}
+        
+    dict_val_f1_vc = {y:f1_score(y_val[y], mdl_vc[y].predict(X_val[y]),
+                                 average='macro')
+                      for y in years}
     
+    print('Voting Classifier Score')
+    print(**dict_val_f1_vc)
+                
     #%% Predict test set
     y_pred = [pd.Series(index=dict_test[y].index,
                         data=mdl_best[y].predict(dict_test[y]),
