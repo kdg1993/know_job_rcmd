@@ -338,7 +338,7 @@ if __name__ == '__main__':
     print('\nMake new submission file <{}>'.format(
         run_new_submission))
     
-    cpu_use = int(3*cpu_count()/4)
+    cpu_use = int(2*cpu_count()/4)
 
     #%% Load data
     years = [2017, 2018, 2019, 2020]
@@ -727,6 +727,10 @@ if __name__ == '__main__':
         return df_tool
     
     df_tool = {y:one_hot_tool_col(y, dict_tr[y]) for y in years}
+    df_tool_integ = {y:pd.Series(
+        np.argmax(df_tool[y].values, axis=1),
+        index=df_tool[y].index)
+        for y in [2017, 2018]}
 
     #%% (Test) column integration
     '''
@@ -845,6 +849,10 @@ if __name__ == '__main__':
                     df[col] = df[col].apply(
                         lambda x: -3 if len(x)>=2 else x)
                     
+    #%% (Test) Replace column bq31 and bq30 for 2017, 2018 respectively
+    dict_tr[2017].bq31 = df_tool_integ[2017]
+    dict_tr[2018].bq30 = df_tool_integ[2018]                
+    
     #%% Decrease data size by changing dtype
     # tr_org = deepcopy(dict_tr)
     # test_org = deepcopy(dict_test)
@@ -857,7 +865,7 @@ if __name__ == '__main__':
     
     # print(sum_tr)
     # print(sum_test)
-    
+
     #%% (Test) Remove every feature with string value
     '''
     dict_tr = {k:v.drop(columns=dict_encoder[k].keys()) 
@@ -944,6 +952,7 @@ if __name__ == '__main__':
     '''
     
     #%% (Test) Simple MLP
+    '''
     import tensorflow as tf
     from tensorflow.keras.models import load_model, Model
     from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
@@ -963,51 +972,71 @@ if __name__ == '__main__':
     
     # y_tool_tr = one_hot_knowcode[X_tool_tr.index]
     # y_tool_val = one_hot_knowcode[X_tool_val.index]
+   
+    smp_year = 2017
+    len_input = len(X_tr[smp_year].columns) + len(df_tool[smp_year].columns)
     
+    X_tr_one_hot = pd.concat(
+        [X_tr[smp_year], 
+         df_tool[smp_year].loc[X_tr[smp_year].index, :]],
+        axis=1
+        )
+    X_val_one_hot = pd.concat(
+        [X_val[smp_year], 
+         df_tool[smp_year].loc[X_val[smp_year].index, :]],
+        axis=1
+        )
+    encdr_knowcode = LabelEncoder()
+    y_tr_one_hot = encdr_knowcode.fit_transform(y_tr[smp_year])
+    y_val_one_hot = encdr_knowcode.transform(y_val[smp_year])    
+    
+    # Set model
     dir_model_save = './model_save/simple_mlp/'
     if not os.path.exists(dir_model_save):
         os.makedirs(dir_model_save)
         
     es = EarlyStopping(monitor='val_loss', patience=20)
     model_path = dir_model_save + \
-        '{epoch:02d}_{val_categorical_accuracy:.5f}.h5'
+        '{epoch:02d}_{val_sparse_categorical_accuracy:.5f}.h5'
         
     mc = ModelCheckpoint(filepath=model_path,
-                         monitor='val_categorical_accuracy',
+                         monitor='val_sparse_categorical_accuracy',
                          verbose=0,
                          mode='auto',
                          save_best_only=True)
     
-    smp_year = 2017
-    len_input = len(X_tr[smp_year].columns) + len(df_tool[smp_year].columns)
-    
+    activation='relu'
+    node = 2*12
     visible = Input( shape=(len_input,) )
-    hidden = Dense(1024, activation='relu')(visible)
+    hidden = Dense(node, activation=activation)(visible)
     hidden = Dropout(0.2)(hidden)
-    hidden = Dense(1024, activation='relu')(hidden)
+    hidden = Dense(node, activation=activation)(hidden)
     hidden = Dropout(0.2)(hidden)
-    hidden = Dense(1024, activation='relu')(hidden)
+    hidden = Dense(node, activation=activation)(hidden)
     hidden = Dropout(0.2)(hidden)
-    output = Dense(1, activation='softmax')(hidden)
+    output = Dense(y_tr_one_hot.max()+1, activation='softmax')(hidden)
      
     model = Model(inputs=visible, outputs=output)
-    opt = Adam(learning_rate=0.01)
+    opt = Adam(learning_rate=0.001)
     model.compile(optimizer=opt, loss='sparse_categorical_crossentropy',
                   metrics=['sparse_categorical_accuracy'])
     print(model.summary())
     
-    history=model.fit(
-        pd.concat([X_tr[smp_year], 
-                  df_tool[smp_year].loc[X_tr[smp_year].index, :]], axis=1),
-        y_tr[smp_year],
-        validation_data=(
-                pd.concat([X_val[smp_year], 
-                           df_tool[smp_year].loc[X_val[smp_year].index, :]], axis=1),
-                y_val[smp_year]),
-        epochs=100,
-        batch_size=8,
-        callbacks=[mc, es],
-        verbose=1)
+    history=model.fit(X_tr_one_hot, y_tr_one_hot,
+        validation_data=(X_val_one_hot, y_val_one_hot),
+            epochs=100,
+            batch_size=64,
+            callbacks=[mc, es],
+            verbose=1)
+    
+    y_pred_tr_one_hot = encdr_knowcode.inverse_transform(
+        np.argmax(model.predict(X_tr_one_hot), axis=1))
+    y_pred_val_one_hot = encdr_knowcode.inverse_transform(
+        np.argmax(model.predict(X_val_one_hot), axis=1))
+    
+    f1_one_hot_tr = f1_score(y_tr[2017], y_pred_tr_one_hot, average='macro')
+    f1_one_hot_val = f1_score(y_val[2017], y_pred_val_one_hot, average='macro')
+    '''
     
     #%% (Test) Make One-hot encoding DataFrame by 'bq31'
     '''
