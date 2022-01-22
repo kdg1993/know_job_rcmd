@@ -222,19 +222,22 @@ def objectiveCat(trial: Trial, X, y, X_val, y_val):
     param = {
       'random_state': trial.suggest_categorical('random_state', [42]),
       'learning_rate' : trial.suggest_loguniform('learning_rate', 0.01, 0.3),
-      'bagging_temperature' :trial.suggest_loguniform('bagging_temperature', 0.01, 100.00),
-      "n_estimators":trial.suggest_categorical("n_estimators", [1000]),
-      "max_depth":trial.suggest_int("max_depth", 4, 16),
-      'random_strength' :trial.suggest_int('random_strength', 0, 100),
-      "colsample_bylevel":trial.suggest_float("colsample_bylevel", 0.4, 1.0),
-      "l2_leaf_reg":trial.suggest_float("l2_leaf_reg",1e-8,3e-5),
-      "min_child_samples": trial.suggest_int("min_child_samples", 5, 100),
-      "max_bin": trial.suggest_int("max_bin", 200, 500),
-      'od_type': trial.suggest_categorical('od_type', ['IncToDec', 'Iter'])
+      #'bagging_temperature' :trial.suggest_loguniform('bagging_temperature', 0.01, 100.00),
+      #"n_estimators":trial.suggest_categorical("n_estimators", [1000]),
+      #"max_depth":trial.suggest_int("max_depth", 4, 16),
+      #'random_strength' :trial.suggest_int('random_strength', 0, 100),
+      #"colsample_bylevel":trial.suggest_float("colsample_bylevel", 0.4, 1.0),
+      #"l2_leaf_reg":trial.suggest_float("l2_leaf_reg",1e-8,3e-5),
+      #"min_child_samples": trial.suggest_int("min_child_samples", 5, 100),
+      #"max_bin": trial.suggest_int("max_bin", 200, 500),
+      #'od_type': trial.suggest_categorical('od_type', ['IncToDec', 'Iter'],
+      #'objective' : trial.suggest_categorical('objective', ['MultiClass','MultiClassOneVsAll','Logloss','CrossEntropy'])
   }
+    
+    #categorical_features_indices2 = np.where(X.dtypes == np.object)[0]
 
     model = CatBoostClassifier(**param)
-    cat_model = model.fit(X, y, eval_set=[(X_val, y_val)], verbose=400, early_stopping_rounds=100)
+    cat_model = model.fit(X, y, eval_set=[(X_val, y_val)], verbose=False) #, cat_features = categorical_features_indices2
      
     score = f1_score(y_val, cat_model.predict(X_val), average='macro')
     
@@ -249,8 +252,7 @@ def get_cat_optuna(X_tr, y_tr, X_val, y_val, n_trial):
     
     study.optimize(lambda trial: objectiveCat(
         trial, X_tr, y_tr, X_val, y_val),
-        n_trials=n_trial,
-        timeout = 600)
+        n_trials=n_trial)
     
     best_cat = CatboostClassifier(**study.best_params).fit(
         pd.concat([X_tr, X_val], axis=0),
@@ -676,6 +678,7 @@ if __name__ == '__main__':
         return df_tool
     
     df_tool = one_hot_tool_col(dict_tr[2017])
+    '''
     #%%
     import torch
     from torch.optim import optimizer
@@ -740,7 +743,7 @@ if __name__ == '__main__':
                       verbose=1)
     
     raise NotImplementedError
-    
+    '''
     
     #%% (Test) column integration
     '''
@@ -967,6 +970,7 @@ if __name__ == '__main__':
     vv['min'] = vv.true-vv.pred
     vv['bq4_1a'] = dict_encoder[2017]['bq4_1a'].inverse_transform(vv['bq4_1a'])
     '''
+    '''
     #%%
     for y,df in dict_tr.items():
         X_tr[y] = torch.FloatTensor(np.array(X_tr[y])).to(device)
@@ -1077,16 +1081,10 @@ if __name__ == '__main__':
                     print("epoch : {:4d}Train_Loss:{:7f}Val_Loss{:.7d}".format(epochs,avg_loss, avg_val_loss))
                     summary.add_scalar('Train_loss', avg_loss.items(), epochs)
                     summary.add_scalar('Validatiom_loss', avg_val_loss.items(), epochs)
-            
-            
-        
-
-
-
-            
+      '''      
     #%% RandomForest hyperparameter search by optuna
     mdl_selc = 'cat'
-    num_trial = 30
+    num_trial = 3
     print('='*15, f'Model selected [{mdl_selc}]', '='*15)
     
     if mdl_selc == 'rf':
