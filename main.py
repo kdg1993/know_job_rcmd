@@ -13,6 +13,43 @@ Main script
 from optuna import Trial
 
 #%% Custom functions
+def objectiveCAT(trial: Trial, X, y, X_val, y_val):
+    params = {
+        'n_estimators': trial.suggest_categorical('n_estimators', [200]),
+        'objective':trial.suggest_categorical('objective', ['multi:softmax']),
+        'max_depth': trial.suggest_int('max_depth', 3, 30),
+        'colsample_bynode': trial.suggest_float('colsample_bynode', 0.2, 1),
+        'n_jobs': trial.suggest_categorical('n_jobs', [cpu_use]),
+        'random_state': trial.suggest_categorical('random_state', [42]),
+        }
+    
+    model = (**params)
+    cat_model = model.fit(X, y)
+    
+    score = f1_score(y_val, cat_model.predict(X_val), average='macro')
+
+    return score
+
+
+def get_cat_optuna(X_tr, y_tr, X_val, y_val, n_trial):
+    study = optuna.create_study(
+        study_name='catboost_param_opt',
+        direction='maximize', 
+        sampler=TPESampler(seed=42)
+        )
+    
+    study.optimize(lambda trial: objectiveCAT(
+        trial, X_tr, y_tr, X_val, y_val),
+        n_trials=n_trial)
+    
+    best_cat = (**study.best_params).fit(
+        pd.concat([X_tr, X_val], axis=0),
+        pd.concat([y_tr, y_val], axis=0),
+        )
+    
+    return best_cat, study.best_value, study
+
+
 def objectiveSVC_RF(trial: Trial, year, X, y, X_val, y_val, df_tool):
     params = {
         'kernel': trial.suggest_categorical('kernel', ['sigmoid']),
