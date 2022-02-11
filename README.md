@@ -1,7 +1,7 @@
 # know_job_rcmd
 ### DACON Job recommend competition by know data
 ## Overview
-- 공공빅데이터 인턴쉽 프로젝트 같은 조였던 김대근, 최성렬, 황산하로 한 팀을 이뤄 도전했던 데이콘 대회
+- 공공빅데이터 인턴쉽 프로젝트 같은 조였던 김대근, 최성렬, 황산하로 한 팀(Team153)을 이뤄 도전했던 데이콘 대회
 - 결과는 38등/350팀
 - 인턴 경험을 통해 초반에 업무 기획부터 결과 제출까지 기획하고 진행
 - 주어진 데이터가 년도별로 구성되어있어 `딕셔너리`구조로 데이터를 처리함
@@ -31,3 +31,5 @@
 - Optuna를 이용해서 파라미터 튜닝
 - 모델은 `RandomForest`가 가장 성능이 뛰어났고 빨랐음
 - 자격증에 대한 변수중요도가 높았기 때문에 one-hot encoding을 통해 적절히 학습
+![image](https://user-images.githubusercontent.com/57973170/153590671-2ad44928-3dc1-41da-b760-1ef63f8019af.png)
+
