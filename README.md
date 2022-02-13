@@ -12,6 +12,33 @@
 - `황산하` : 분석 기획, 데이터 전처리, 파라미터 튜닝
 - `최성렬` : 분석 기획, 데이터 전처리
 
+## Model
+- sklearn random forest classifier
+  * 주력 모델
+  * 
+- sklearn SVC
+- sklearn SVC + random forest
+- sklearn Gaussian Naive Bayes
+  * 가장 처음 시도한 모델
+  * 
+- sklearn Multinomial Naive Bayes
+- sklearn Logistic Regression
+- catboost
+- xgboost random forest classifier
+- xgboost classifier
+
+## Hyperparameter tuning
+- Using optuna
+  * Bayesian hyperparameter optimization framework
+- Train, validation split = 0.8 : 0.2 (*참고 shuffle=True, stratify=True) 
+- Random state fixed as 42
+- Hyperparameter 최적화 목표 : Maximize validation macro f1 score
+
+## Data preprocessing
+- 결측치는 -1로 대체함
+- Sklearn LabelEncoder를 이용해 feature labeling
+- If an element of categorical feature in test set did not exist in training set then replace it as -2
+
 ## FeedBack
 ### 잘한점
 1. 분석기획을 하고 진행함으로써 체계적인 프로젝트를 진행할 수 있었음
